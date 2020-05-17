@@ -2,3 +2,6 @@
 *.mod
 *.cmd
 *.o
+Module.symvers
+*.mod.c
+modules.order

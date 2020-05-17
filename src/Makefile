@@ -3,7 +3,7 @@ KEY_DIR ?= ./
 obj-m += cpuautoscaling.o
 
 all:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) -I/usr/include/ modules
 	sudo /usr/src/linux-headers-$(shell uname -r)/scripts/sign-file sha256 $(KEY_DIR)/MOK.priv $(KEY_DIR)/MOK.der ./cpuautoscaling.ko
 
 clean:
