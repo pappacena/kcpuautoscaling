@@ -3,7 +3,6 @@
 #include <linux/kernel.h>
 #include <linux/cpumask.h>
 
-#include <linux/cpumask.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -56,22 +55,25 @@ static u64 get_iowait_time(struct kernel_cpustat *kcs, int cpu) {
 }
 
 
-int get_cpu_usage(void) {
+int inline get_cpu_usage(void) {
     // See fs/proc/stat.c for more details.
-    int i, k, idle_percent, idle_percent_sum = 0, last_idle_percent, total_cores = 0;
+    int i, k, total_cores, idle_percent;
     u64 total = 0, user = 0, nice = 0, system = 0, 
         idle = 0, iowait = 0, irq = 0, softirq = 0;
     u64 last_user = 0, last_nice = 0, last_system = 0, 
         last_idle = 0, last_iowait = 0, last_irq = 0, last_softirq = 0; 
 
+    total_cores = 0;
     for(k = 0; k < 2 ; k++) {
         for_each_online_cpu(i) {
-            total_cores++;
+            if (!cpu_active(i)) 
+                continue;
             struct kernel_cpustat kcpustat;
             u64 *cpustat = kcpustat.cpustat;
 
             kcpustat = kcpustat_cpu(i);
 
+            total_cores++;
             user += cpustat[CPUTIME_USER];
             nice += cpustat[CPUTIME_NICE];
             system += cpustat[CPUTIME_SYSTEM];
@@ -98,7 +100,7 @@ int get_cpu_usage(void) {
             irq = 0;
             softirq = 0;
 
-            msleep(1000);
+            msleep(100);
         }
         else {
             user = user - last_user;
@@ -116,15 +118,49 @@ int get_cpu_usage(void) {
     printk(KERN_INFO "idle = %llu / total = %llu", idle, total);
     printk(KERN_INFO "Processors idle percent average = %d", idle_percent);
 
-    return idle_percent;
+    return (100 - idle_percent);
+}
+
+static inline int get_cores_desired_delta(void) {
+    int high_usage = 70, low_usage = 40, usage;
+    usage = get_cpu_usage();
+    if(usage >= high_usage)
+        return +1;
+    if (usage <= low_usage)
+        return -1;
+    return 0;
+}
+
+static inline void set_enabled_cores(int n) {
+    int i, enabled, min_cpus = NR_CPUS / 2;
+    if(n < min_cpus) {
+        printk(KERN_INFO "Avoiding to set enabled cores to less then %d.", min_cpus);
+    }
+
+    for_each_possible_cpu(i) {
+        if(i == 0)
+            continue;
+        enabled = i <= (n - 1);
+        printk(KERN_INFO "~> %d = %d", i, enabled);
+        set_cpu_active(i, enabled);
+        set_cpu_present(i, enabled);
+    }
 }
 
 static int __init cpuautoscaling_init(void) {
+    if(!CONFIG_HOTPLUG_CPU) {
+        printk(KERN_INFO "Hotplug should be enabled.");
+        return 0;
+    }
+
+    set_enabled_cores(num_active_cpus() + get_cores_desired_delta());
+
     // kernel_cpu_stat *kcs;
-    printk(KERN_INFO "Hello World! %d/%d (%d%%) :)\n", 
-        num_online_cpus(), num_possible_cpus(), get_cpu_usage());
+    printk(KERN_INFO "%d/%d (%d%% usage ~> Delta %d) :)\n", 
+        num_online_cpus(), num_possible_cpus(), get_cpu_usage(), get_cores_desired_delta());
     return 0;
 }
+
 static void __exit cpuautoscaling_exit(void) {
     printk(KERN_INFO "Goodbye, World!\n");
 }
