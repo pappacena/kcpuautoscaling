@@ -1,6 +1,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/kthread.h>
 
@@ -19,13 +20,16 @@
 #include <linux/tick.h>
 #include <linux/delay.h>  // msleep
 
+#include <asm/uaccess.h>
+#include <asm/unistd.h>
+
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Thiago F. Pappacena");
 MODULE_DESCRIPTION("Module to automatically enable/disable cores of the system depending on the load.");
 MODULE_VERSION("0.1.0");
 
-#define CPU_USAGE_SAMPLING_MSEC 200
+#define CPU_USAGE_SAMPLING_MSEC 500
 struct task_struct* task;
 int task_stop = 0;
 
@@ -105,7 +109,7 @@ int inline get_cpu_usage(void) {
             irq = 0;
             softirq = 0;
 
-            msleep(CPU_USAGE_SAMPLING_MSEC);
+            msleep_interruptible(CPU_USAGE_SAMPLING_MSEC);
         }
         else {
             user = user - last_user;
@@ -124,7 +128,7 @@ int inline get_cpu_usage(void) {
 }
 
 static inline int get_cores_desired_delta(void) {
-    int high_usage = 70, low_usage = 40, usage;
+    int high_usage = 80, low_usage = 20, usage;
     usage = get_cpu_usage();
     if(usage >= high_usage)
         return +1;
@@ -134,19 +138,19 @@ static inline int get_cores_desired_delta(void) {
 }
 
 static inline void set_enabled_cores(int n) {
-    int i, enabled, min_cpus = NR_CPUS / 2;
+    int i, enabled, min_cpus = num_possible_cpus() / 4;
     if(n < min_cpus) {
-        printk(KERN_INFO "Avoiding to set enabled cores to less then %d.", min_cpus);
-        // return;
+        return;
     }
 
     for_each_possible_cpu(i) {
         if(i == 0)
             continue;
         enabled = i <= (n - 1);
-        printk(KERN_INFO "~> CPU#%d = %d", i, enabled);
-        set_cpu_active(i, enabled);
-        set_cpu_present(i, enabled);
+        if (enabled)
+            cpu_up(i);
+        else 
+            cpu_down(i);
     }
 }
 
@@ -155,8 +159,8 @@ int adjust_forever(void *data) {
     while(!task_stop) {
         delta = get_cores_desired_delta();
         if (delta != 0) {
-            printk(KERN_INFO "%d/%d (%d%% usage ~> Delta %d) :)\n", 
-                num_active_cpus(), num_possible_cpus(), get_cpu_usage(), get_cores_desired_delta());
+            // printk(KERN_INFO "%d/%d (%d%% usage ~> Delta %d) :)\n", 
+            //     num_active_cpus(), num_possible_cpus(), get_cpu_usage(), get_cores_desired_delta());
             set_enabled_cores(num_active_cpus() + delta);
         }
     }
