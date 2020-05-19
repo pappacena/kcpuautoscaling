@@ -1,27 +1,12 @@
-#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/cpu.h>
-#include <linux/cpumask.h>
 #include <linux/kthread.h>
 
-#include <linux/fs.h>
-#include <linux/init.h>
-#include <linux/interrupt.h>
 #include <linux/kernel_stat.h>
-#include <linux/proc_fs.h>
-#include <linux/sched.h>
-#include <linux/sched/stat.h>
-#include <linux/seq_file.h>
-#include <linux/slab.h>
-#include <linux/time.h>
-#include <linux/irqnr.h>
 #include <linux/sched/cputime.h>
 #include <linux/tick.h>
-#include <linux/delay.h>  // msleep
-
-#include <asm/uaccess.h>
-#include <asm/unistd.h>
+#include <linux/delay.h>
 
 
 MODULE_LICENSE("GPL");
