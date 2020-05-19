@@ -2,6 +2,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/cpumask.h>
+#include <linux/kthread.h>
 
 #include <linux/fs.h>
 #include <linux/init.h>
@@ -24,34 +25,38 @@ MODULE_AUTHOR("Thiago F. Pappacena");
 MODULE_DESCRIPTION("Module to automatically enable/disable cores of the system depending on the load.");
 MODULE_VERSION("0.1.0");
 
+#define CPU_USAGE_SAMPLING_MSEC 200
+struct task_struct* task;
+int task_stop = 0;
+
 static u64 get_idle_time(struct kernel_cpustat *kcs, int cpu) {
-	u64 idle, idle_usecs = -1ULL;
+    u64 idle, idle_usecs = -1ULL;
 
-	if (cpu_online(cpu))
-		idle_usecs = get_cpu_idle_time_us(cpu, NULL);
+    if (cpu_online(cpu))
+        idle_usecs = get_cpu_idle_time_us(cpu, NULL);
 
-	if (idle_usecs == -1ULL)
-		/* !NO_HZ or cpu offline so we can rely on cpustat.idle */
-		idle = kcs->cpustat[CPUTIME_IDLE];
-	else
-		idle = idle_usecs * NSEC_PER_USEC;
+    if (idle_usecs == -1ULL)
+        /* !NO_HZ or cpu offline so we can rely on cpustat.idle */
+        idle = kcs->cpustat[CPUTIME_IDLE];
+    else
+        idle = idle_usecs * NSEC_PER_USEC;
 
-	return idle;
+    return idle;
 }
 
 static u64 get_iowait_time(struct kernel_cpustat *kcs, int cpu) {
-	u64 iowait, iowait_usecs = -1ULL;
+    u64 iowait, iowait_usecs = -1ULL;
 
-	if (cpu_online(cpu))
-		iowait_usecs = get_cpu_iowait_time_us(cpu, NULL);
+    if (cpu_online(cpu))
+        iowait_usecs = get_cpu_iowait_time_us(cpu, NULL);
 
-	if (iowait_usecs == -1ULL)
-		/* !NO_HZ or cpu offline so we can rely on cpustat.iowait */
-		iowait = kcs->cpustat[CPUTIME_IOWAIT];
-	else
-		iowait = iowait_usecs * NSEC_PER_USEC;
+    if (iowait_usecs == -1ULL)
+        /* !NO_HZ or cpu offline so we can rely on cpustat.iowait */
+        iowait = kcs->cpustat[CPUTIME_IOWAIT];
+    else
+        iowait = iowait_usecs * NSEC_PER_USEC;
 
-	return iowait;
+    return iowait;
 }
 
 
@@ -79,8 +84,8 @@ int inline get_cpu_usage(void) {
             system += cpustat[CPUTIME_SYSTEM];
             idle += get_idle_time(&kcpustat, i);
             iowait += get_iowait_time(&kcpustat, i);
-            irq	+= cpustat[CPUTIME_IRQ];
-            softirq	+= cpustat[CPUTIME_SOFTIRQ];
+            irq += cpustat[CPUTIME_IRQ];
+            softirq += cpustat[CPUTIME_SOFTIRQ];
         }
 
         if (k == 0) {
@@ -100,7 +105,7 @@ int inline get_cpu_usage(void) {
             irq = 0;
             softirq = 0;
 
-            msleep(100);
+            msleep(CPU_USAGE_SAMPLING_MSEC);
         }
         else {
             user = user - last_user;
@@ -115,9 +120,6 @@ int inline get_cpu_usage(void) {
 
     total = user + nice + system + idle + iowait + irq + softirq;
     idle_percent = 100 * idle / total;
-    printk(KERN_INFO "idle = %llu / total = %llu", idle, total);
-    printk(KERN_INFO "Processors idle percent average = %d", idle_percent);
-
     return (100 - idle_percent);
 }
 
@@ -135,34 +137,62 @@ static inline void set_enabled_cores(int n) {
     int i, enabled, min_cpus = NR_CPUS / 2;
     if(n < min_cpus) {
         printk(KERN_INFO "Avoiding to set enabled cores to less then %d.", min_cpus);
+        // return;
     }
 
     for_each_possible_cpu(i) {
         if(i == 0)
             continue;
         enabled = i <= (n - 1);
-        printk(KERN_INFO "~> %d = %d", i, enabled);
+        printk(KERN_INFO "~> CPU#%d = %d", i, enabled);
         set_cpu_active(i, enabled);
         set_cpu_present(i, enabled);
     }
 }
 
+int adjust_forever(void *data) {
+    int delta;
+    while(!task_stop) {
+        delta = get_cores_desired_delta();
+        if (delta != 0) {
+            printk(KERN_INFO "%d/%d (%d%% usage ~> Delta %d) :)\n", 
+                num_active_cpus(), num_possible_cpus(), get_cpu_usage(), get_cores_desired_delta());
+            set_enabled_cores(num_active_cpus() + delta);
+        }
+    }
+
+    do_exit(0);
+}
+
 static int __init cpuautoscaling_init(void) {
     if(!CONFIG_HOTPLUG_CPU) {
-        printk(KERN_INFO "Hotplug should be enabled.");
+        printk(KERN_ERR "Hotplug should be enabled.");
         return 0;
     }
 
-    set_enabled_cores(num_active_cpus() + get_cores_desired_delta());
+    task = kthread_run(adjust_forever, NULL, "kthread_cpuautoscaling");
+    if (!task) {
+        printk(KERN_ERR "Error starting kernel task.");
+        return 0;
+    }
 
-    // kernel_cpu_stat *kcs;
-    printk(KERN_INFO "%d/%d (%d%% usage ~> Delta %d) :)\n", 
-        num_online_cpus(), num_possible_cpus(), get_cpu_usage(), get_cores_desired_delta());
     return 0;
 }
 
 static void __exit cpuautoscaling_exit(void) {
     printk(KERN_INFO "Goodbye, World!\n");
+
+    if (task) {
+        task_stop = 1;
+
+        // wait for the thread termination
+        kthread_stop(task);
+        
+        // release the task structure
+        put_task_struct(task);
+    }
+
+    set_enabled_cores(NR_CPUS);
 }
 
 module_init(cpuautoscaling_init);

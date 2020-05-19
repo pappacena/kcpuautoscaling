@@ -18,4 +18,4 @@ test: all
 	# Insert the module
 	sudo insmod cpuautoscaling.ko
 	# Display the kernel log
-	dmesg
+	dmesg --follow
